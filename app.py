@@ -36,7 +36,7 @@ collection = chroma_client.get_or_create_collection(
 st.set_page_config(page_title="RAG with ChromaDB", layout="wide")
 st.title("📚 RAG App — Knowledge Base & Chat")
 
-tab1, tab2 = st.tabs(["📄 Knowledge Base", "💬 Chat"])
+tab1, tab2, tab3 = st.tabs(["📄 Knowledge Base", "💬 Chat", "⚙️ BC Prompt Generator"])
 
 # ------------------------
 # Tab 1: Knowledge Base
@@ -153,5 +153,44 @@ with tab2:
                         st.markdown(retrieved_context)
 
         st.session_state.chat_history.append(("assistant", answer))
+# ------------------------
+# Tab 3: BC Prompt Generator
+# ------------------------
+with tab3:
+    st.subheader("⚙️ Dynamics 365 Business Central Prompt Generator")
+
+    def generate_bc_prompt(description):
+        return f"""
+You are an expert Microsoft Dynamics 365 Business Central AL developer.
+Write AL code to accomplish the following task:
+{description}
+
+Make sure the code follows BC best practices and includes any necessary triggers, events, or dependencies.
+If needed, include comments to explain key parts of the code.
+"""
+
+    user_desc = st.text_area(
+        "Enter your request (English or Vietnamese):",
+        placeholder="Example: add field to table sales header"
+    )
+
+    if st.button("Generate Prompt"):
+        if user_desc.strip():
+            # Detect & translate Vietnamese → English
+            translation_response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Translate the following text to English without changing its meaning."},
+                    {"role": "user", "content": user_desc.strip()}
+                ]
+            )
+            translated_text = translation_response.choices[0].message.content.strip()
+
+            # Generate BC prompt
+            prompt_text = generate_bc_prompt(translated_text)
+            st.subheader("Generated Prompt:")
+            st.code(prompt_text, language="markdown")
+        else:
+            st.warning("Please enter a description.")
 
 
