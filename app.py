@@ -203,9 +203,12 @@ with tab2:
         with st.chat_message("user", avatar="🧑"):
             st.markdown(user_input)
 
-        # Retrieve from KB
-        results = collection.query(query_texts=[user_input], n_results=3)
-        retrieved_context = "\n".join(results["documents"][0]) if results["documents"] else ""
+        # Retrieve from FAISS
+        retrieved_context = ""
+        if vector_store:
+            docs = vector_store.similarity_search(user_input, k=3)
+            retrieved_context = "\n".join([doc.page_content for doc in docs])
+
 
         # Build prompt
         conversation = "\n".join([f"{role}: {msg}" for role, msg in st.session_state.chat_history])
