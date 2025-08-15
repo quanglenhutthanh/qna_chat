@@ -2,6 +2,6 @@ streamlit
 langchain
 langchain-community
 langchain-text-splitters
+langchain-openai
 PyPDF2
-chromadb
 openai>=1.0.0
