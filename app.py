@@ -234,16 +234,6 @@ with tab2:
 with tab3:
     st.subheader("⚙️ Dynamics 365 Business Central Prompt Generator")
 
-    def generate_bc_prompt(description):
-        return f"""
-You are an expert Microsoft Dynamics 365 Business Central AL developer.
-Write AL code to accomplish the following task:
-{description}
-
-Make sure the code follows BC best practices and includes any necessary triggers, events, or dependencies.
-If needed, include comments to explain key parts of the code.
-"""
-
     user_desc = st.text_area(
         "Enter your request (English or Vietnamese):",
         placeholder="Example: add field to table sales header"
@@ -251,20 +241,43 @@ If needed, include comments to explain key parts of the code.
 
     if st.button("Generate Prompt"):
         if user_desc.strip():
-            # Detect & translate Vietnamese → English
+            # 1. Detect & translate Vietnamese → English if needed
             translation_response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "Translate the following text to English without changing its meaning."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "If the input is in Vietnamese, translate it into English. "
+                            "If it's already in English, return it unchanged."
+                        )
+                    },
                     {"role": "user", "content": user_desc.strip()}
                 ]
             )
             translated_text = translation_response.choices[0].message.content.strip()
 
-            # Generate BC prompt
-            prompt_text = generate_bc_prompt(translated_text)
+            # 2. Dynamically ask AI to generate a BC development prompt
+            bc_prompt_response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert Microsoft Dynamics 365 Business Central AL developer. "
+                            "Create a clear and detailed coding task prompt based on the given request, "
+                            "so another AI can generate AL code for it. "
+                            "Avoid generic phrasing, tailor the prompt to the request, and include best practices if relevant."
+                        )
+                    },
+                    {"role": "user", "content": translated_text}
+                ]
+            )
+            generated_prompt = bc_prompt_response.choices[0].message.content.strip()
+
             st.subheader("Generated Prompt:")
-            st.code(prompt_text, language="markdown")
+            st.code(generated_prompt, language="markdown")
+
         else:
             st.warning("Please enter a description.")
 
