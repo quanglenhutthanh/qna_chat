@@ -2,14 +2,15 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
-from knowledge_base import add_documents_to_vectorstore, view_knowledge_base
-# import chromadb
-# from chromadb.utils import embedding_functions
-
+from knowledge_base import (
+    add_documents_to_vectorstore, 
+    view_knowledge_base, 
+    validate_file,
+    retrieve_with_reranking,
+    get_kb_stats
+)
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
-
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # ------------------------
 # Load secrets
@@ -21,38 +22,25 @@ if not OPENAI_API_KEY:
     st.stop()
 
 # ------------------------
-# OpenAI & ChromaDB setup
+# OpenAI & Embeddings setup
 # ------------------------
 client = OpenAI(api_key=OPENAI_API_KEY)
-# embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
-#     api_key=OPENAI_API_KEY,
-#     model_name="text-embedding-3-small"
-# )
-
-# chroma_client = chromadb.Client()
-# collection = chroma_client.get_or_create_collection(
-#     name="app_kb",
-#     embedding_function=embedding_fn
-# )
-
 embedding_fn = OpenAIEmbeddings(
     openai_api_key=OPENAI_API_KEY,
     model="text-embedding-3-small"
 )
-vector_store = None
 
 # ------------------------
 # Streamlit App Layout
 # ------------------------
-st.set_page_config(page_title="RAG with ChromaDB", layout="wide")
-st.title("📚 RAG App — Knowledge Base & Chat")
+st.set_page_config(page_title="RAG with Enhanced Knowledge Base", layout="wide")
+st.title("📚 Enhanced RAG App — Knowledge Base & Chat")
 
 tab1, tab2, tab3 = st.tabs(["💬 Chat", "⚙️ BC Prompt Generator", "📄 Knowledge Base"])
+
 # ------------------------
 # Tab 1: Chat
 # ------------------------
-import streamlit as st
-
 with tab1:
     st.subheader("💬 Chat with Your Knowledge Base")
 
@@ -88,13 +76,17 @@ with tab1:
         with st.chat_message("user", avatar="🧑"):
             st.markdown(user_input)
 
-        # Retrieve from FAISS
+        # Retrieve from FAISS using enhanced retrieval
         retrieved_context = ""
-        vector_store = st.session_state.vector_store
+        vector_store = st.session_state.get("vector_store")
         if vector_store:
-            docs = vector_store.similarity_search(user_input, k=3)
-            retrieved_context = "\n".join([doc.page_content for doc in docs])
-
+            try:
+                # Use the new reranking function
+                docs = retrieve_with_reranking(vector_store, user_input, k=5, rerank_k=3)
+                retrieved_context = "\n".join([doc.page_content for doc in docs])
+            except Exception as e:
+                st.error(f"Error retrieving documents: {str(e)}")
+                retrieved_context = ""
 
         # Build prompt
         conversation = "\n".join([f"{role}: {msg}" for role, msg in st.session_state.chat_history])
@@ -102,18 +94,25 @@ with tab1:
 
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Thinking..."):
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                answer = response.choices[0].message.content
-                st.markdown(answer)
-                 # Optional: collapsible context view
-                if retrieved_context:
-                    with st.expander("🔍 View retrieved context"):
-                        st.markdown(retrieved_context)
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    answer = response.choices[0].message.content
+                    st.markdown(answer)
+                    
+                    # Optional: collapsible context view
+                    if retrieved_context:
+                        with st.expander("🔍 View retrieved context"):
+                            st.markdown(retrieved_context)
+                            
+                except Exception as e:
+                    st.error(f"Error generating response: {str(e)}")
+                    answer = "Sorry, I encountered an error while processing your request."
 
         st.session_state.chat_history.append(("assistant", answer))
+
 # ------------------------
 # Tab 2: BC Prompt Generator
 # ------------------------
@@ -127,45 +126,49 @@ with tab2:
 
     if st.button("Generate Prompt"):
         if user_desc.strip():
-            # 1. Detect & translate Vietnamese → English if needed
-            translation_response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "If the input is in Vietnamese, translate it into English. "
-                            "If it's already in English, return it unchanged."
-                        )
-                    },
-                    {"role": "user", "content": user_desc.strip()}
-                ]
-            )
-            translated_text = translation_response.choices[0].message.content.strip()
+            try:
+                # 1. Detect & translate Vietnamese → English if needed
+                translation_response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "If the input is in Vietnamese, translate it into English. "
+                                "If it's already in English, return it unchanged."
+                            )
+                        },
+                        {"role": "user", "content": user_desc.strip()}
+                    ]
+                )
+                translated_text = translation_response.choices[0].message.content.strip()
 
-            # 2. Dynamically ask AI to generate a BC development prompt
-            bc_prompt_response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are an expert Microsoft Dynamics 365 Business Central AL developer. "
-                            "Create a clear and detailed coding task prompt based on the given request, "
-                            "so another AI can generate AL code for it. "
-                            "Avoid generic phrasing, tailor the prompt to the request, and include best practices if relevant."
-                        )
-                    },
-                    {"role": "user", "content": translated_text}
-                ]
-            )
-            generated_prompt = bc_prompt_response.choices[0].message.content.strip()
+                # 2. Dynamically ask AI to generate a BC development prompt
+                bc_prompt_response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert Microsoft Dynamics 365 Business Central AL developer. "
+                                "Create a clear and detailed coding task prompt based on the given request, "
+                                "so another AI can generate AL code for it. "
+                                "Avoid generic phrasing, tailor the prompt to the request, and include best practices if relevant."
+                            )
+                        },
+                        {"role": "user", "content": translated_text}
+                    ]
+                )
+                generated_prompt = bc_prompt_response.choices[0].message.content.strip()
 
-            st.subheader("Generated Prompt:")
-            st.code(generated_prompt, language="markdown")
-
+                st.subheader("Generated Prompt:")
+                st.code(generated_prompt, language="markdown")
+                
+            except Exception as e:
+                st.error(f"Error generating prompt: {str(e)}")
         else:
             st.warning("Please enter a description.")
+
 # ------------------------
 # Tab 3: Knowledge Base
 # ------------------------
@@ -175,77 +178,68 @@ if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 
 with tab3:
+    st.subheader("📄 Enhanced Knowledge Base Management")
+    
+    # Display current KB stats
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📊 View Knowledge Base Stats"):
+            stats = get_kb_stats(st.session_state.get("vector_store"))
+            st.json(stats)
+    
+    with col2:
+        if st.button("🗑️ Clear Knowledge Base"):
+            st.session_state.vector_store = None
+            st.success("Knowledge base cleared!")
+            st.rerun()
+    
+    # File upload section
     st.subheader("Upload & Embed Documents")
     uploaded_files = st.file_uploader(
-        "Upload TXT, MD, or PDF files",
+        "Upload TXT, MD, or PDF files (max 10MB each)",
         type=["txt", "md", "pdf"],
         accept_multiple_files=True
     )
 
     if uploaded_files:
-        st.session_state.vector_store, message = add_documents_to_vectorstore(
-            uploaded_files,
-            embedding_fn,
-            st.session_state.vector_store
-        )
-        st.info(message)
+        # Validate files before processing
+        valid_files = []
+        for uploaded_file in uploaded_files:
+            try:
+                validate_file(uploaded_file)
+                valid_files.append(uploaded_file)
+            except ValueError as e:
+                st.error(f"❌ {str(e)}")
+                continue
+        
+        if valid_files:
+            try:
+                st.session_state.vector_store, message = add_documents_to_vectorstore(
+                    valid_files,
+                    embedding_fn,
+                    st.session_state.vector_store
+                )
+                st.success(message)
+                
+                # Show updated stats
+                stats = get_kb_stats(st.session_state.vector_store)
+                st.info(f"📈 Updated stats: {stats['total_chunks']} chunks stored")
+                
+            except Exception as e:
+                st.error(f"❌ Error processing files: {str(e)}")
 
-    if st.button("View Current Knowledge Base"):
-        if st.session_state.get("vector_store"):
-            st.write(view_knowledge_base(st.session_state.vector_store))
-        else:
-            st.warning("No knowledge base found. Please upload and embed documents first.")
-
-
-# with tab1:
-#     st.subheader("Upload & Embed Documents")
-#     uploaded_files = st.file_uploader(
-#         "Upload TXT, MD, or PDF files",
-#         type=["txt", "md", "pdf"],
-#         accept_multiple_files=True
-#     )
-
-#     if uploaded_files:
-#         for uploaded_file in uploaded_files:
-#             text = ""
-
-#             # Handle TXT and MD
-#             if uploaded_file.type in ["text/plain", "text/markdown"]:
-#                 text = uploaded_file.read().decode("utf-8")
-
-#             # Handle PDF
-#             elif uploaded_file.type == "application/pdf":
-#                 pdf_reader = PyPDF2.PdfReader(uploaded_file)
-#                 for page in pdf_reader.pages:
-#                     page_text = page.extract_text()
-#                     if page_text:
-#                         text += page_text + "\n"
-
-#             # Skip if no text extracted
-#             if not text.strip():
-#                 st.warning(f"⚠️ No text found in {uploaded_file.name}, skipping...")
-#                 continue
-
-#             # Split into chunks
-#             splitter = RecursiveCharacterTextSplitter(
-#                 chunk_size=800,
-#                 chunk_overlap=100
-#             )
-#             chunks = splitter.split_text(text)
-
-#             # Add chunks to collection
-#             for i, chunk in enumerate(chunks):
-#                 doc_id = f"{uploaded_file.name}-chunk-{i}"
-#                 collection.add(
-#                     documents=[chunk],
-#                     ids=[doc_id],
-#                     metadatas={"source": uploaded_file.name}
-#                 )
-
-#         st.success("✅ Documents added to knowledge base.")
-
-#     if st.button("View Current Knowledge Base"):
-#         st.write(f"Total documents stored: {collection.count()}")
+    # Display current knowledge base info
+    st.subheader("Current Knowledge Base Status")
+    if st.session_state.get("vector_store"):
+        kb_info = view_knowledge_base(st.session_state.vector_store)
+        st.info(kb_info)
+        
+        # Show detailed stats
+        stats = get_kb_stats(st.session_state.vector_store)
+        st.json(stats)
+    else:
+        st.warning("📂 Knowledge base is empty. Please upload and embed documents first.")
 
 
 
